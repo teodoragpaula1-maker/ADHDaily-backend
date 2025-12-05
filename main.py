@@ -9,12 +9,12 @@ app = FastAPI()
 # --- CORS FIX ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],      # allow your frontend
+    allow_origins=["*"],       # allow your frontend
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-# -----------------
+# ----------------
 
 @app.get("/health")
 def health_check():

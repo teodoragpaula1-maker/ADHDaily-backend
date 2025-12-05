@@ -1,234 +1,123 @@
-import random
 from fastapi import APIRouter, HTTPException
+from datetime import date
 from models import Task, TaskCreate
-from db import get_connection
 
 router = APIRouter()
 
-
-@router.get("/focus-tasks")
-def get_focus_tasks() -> list[Task]:
-    # 1) Open DB connection
-    conn = get_connection()
-    cur = conn.cursor()
-
-    # 2) Run a query to fetch tasks
-    cur.execute(
-        """
-        SELECT id, title, size, category, importance, due_date, status
-        FROM tasks
-        WHERE status = 'pending'
-        ORDER BY
-            importance DESC NULLS LAST,
-            due_date ASC NULLS LAST,
-            id ASC
-        LIMIT 20;
-        """
-    )
-    rows = cur.fetchall()
-
-    # 3) Close DB stuff
-    cur.close()
-    conn.close()
-
-    # 4) Convert rows (tuples) into Task objects
-    tasks: list[Task] = []
-    for row in rows:
-        task = Task(
-            id=row[0],
-            title=row[1],
-            size=row[2],
-            category=row[3],
-            importance=row[4],
-            due_date=row[5],
-            status=row[6],
-        )
-        tasks.append(task)
-
-    return tasks
-@router.get("/focus-tasks/random")
-def get_random_focus_tasks() -> list[Task]:
-    """
-    Pick up to 3 pending tasks, trying to mix sizes:
-    - 1 tiny
-    - 1 medium
-    - 1 big
-    If there aren't enough, fill with whatever is available.
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        SELECT id, title, size, category, importance, due_date, status
-        FROM tasks
-        WHERE status = 'pending';
-        """
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    # Convert rows into Task objects, and group by size
-    tiny_tasks: list[Task] = []
-    medium_tasks: list[Task] = []
-    big_tasks: list[Task] = []
-
-    all_tasks: list[Task] = []
-
-    for row in rows:
-        task = Task(
-            id=row[0],
-            title=row[1],
-            size=row[2],       # row[2] is 'tiny' | 'medium' | 'big'
-            category=row[3],
-            importance=row[4],
-            due_date=row[5],
-            status=row[6],
-        )
-        all_tasks.append(task)
-
-        if row[2] == "tiny":
-            tiny_tasks.append(task)
-        elif row[2] == "medium":
-            medium_tasks.append(task)
-        elif row[2] == "big":
-            big_tasks.append(task)
-
-    selected: list[Task] = []
-
-    # Try to pick one from each size bucket
-    if tiny_tasks:
-        selected.append(random.choice(tiny_tasks))
-    if medium_tasks:
-        selected.append(random.choice(medium_tasks))
-    if big_tasks:
-        selected.append(random.choice(big_tasks))
-
-    # If we still have fewer than 3, fill up with remaining tasks
-    if len(selected) < 3:
-        remaining = [t for t in all_tasks if t not in selected]
-        random.shuffle(remaining)
-        needed = 3 - len(selected)
-        selected.extend(remaining[:needed])
-
-    return selected
+# ----------------------------------------
+# In-memory "database"
+# ----------------------------------------
+tasks: list[Task] = []
+next_id = 1
 
 
-@router.post("/tasks")
-def create_task(task_in: TaskCreate) -> Task:
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        INSERT INTO tasks (title, size, category, importance, due_date, status)
-        VALUES (%s, %s, %s, %s, %s, %s)
-        RETURNING id, title, size, category, importance, due_date, status;
-        """,
-        (
-            task_in.title,
-            task_in.size,
-            task_in.category,
-            task_in.importance,
-            task_in.due_date,
-            "pending",
-        ),
-    )
-
-    row = cur.fetchone()
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    return Task(
-        id=row[0],
-        title=row[1],
-        size=row[2],
-        category=row[3],
-        importance=row[4],
-        due_date=row[5],
-        status=row[6],
-    )
+# ----------------------------------------
+# Helper – generate new ID
+# ----------------------------------------
+def generate_id():
+    global next_id
+    current = next_id
+    next_id += 1
+    return current
 
 
-@router.post("/tasks/{task_id}/complete")
-def complete_task(task_id: int) -> Task:
-    conn = get_connection()
-    cur = conn.cursor()
-
-    cur.execute(
-        """
-        UPDATE tasks
-        SET status = 'completed'
-        WHERE id = %s
-        RETURNING id, title, size, category, importance, due_date, status;
-        """,
-        (task_id,),
-    )
-
-    row = cur.fetchone()
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    if row is None:
-        # no task with that id
-        raise HTTPException(status_code=404, detail="Task not found")
-
-    return Task(
-        id=row[0],
-        title=row[1],
-        size=row[2],
-        category=row[3],
-        importance=row[4],
-        due_date=row[5],
-        status=row[6],
-    )
+# ----------------------------------------
+# GET all tasks (optionally filter by status)
+# ----------------------------------------
 @router.get("/tasks")
-def list_tasks(status: str | None = None) -> list[Task]:
-    """
-    List tasks, optionally filtered by status.
-    - status can be 'pending', 'completed', or None (all)
-    """
-    conn = get_connection()
-    cur = conn.cursor()
-
-    if status in ("pending", "completed"):
-        cur.execute(
-            """
-            SELECT id, title, size, category, importance, due_date, status
-            FROM tasks
-            WHERE status = %s
-            ORDER BY id ASC;
-            """,
-            (status,),
-        )
-    else:
-        # no filter → return all
-        cur.execute(
-            """
-            SELECT id, title, size, category, importance, due_date, status
-            FROM tasks
-            ORDER BY id ASC;
-            """
-        )
-
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-
-    tasks: list[Task] = []
-    for row in rows:
-        task = Task(
-            id=row[0],
-            title=row[1],
-            size=row[2],
-            category=row[3],
-            importance=row[4],
-            due_date=row[5],
-            status=row[6],
-        )
-        tasks.append(task)
-
+def get_tasks(status: str | None = None):
+    if status == "pending":
+        return [t for t in tasks if t.status == "pending"]
+    if status == "completed":
+        return [t for t in tasks if t.status == "completed"]
     return tasks
+
+
+# ----------------------------------------
+# GET only completed tasks (History screen)
+# ----------------------------------------
+@router.get("/tasks/completed")
+def get_completed_tasks():
+    return [t for t in tasks if t.status == "completed"]
+
+
+# ----------------------------------------
+# CREATE a task
+# ----------------------------------------
+@router.post("/tasks", response_model=Task)
+def create_task(task_data: TaskCreate):
+    new_task = Task(
+        id=generate_id(),
+        title=task_data.title,
+        size=task_data.size,
+        category=task_data.category,
+        importance=task_data.importance,
+        due_date=task_data.due_date,
+        status="pending",
+        recurrence=task_data.recurrence,       # NEW: routine recurrence
+        is_routine=task_data.recurrence is not None
+    )
+
+    tasks.append(new_task)
+    return new_task
+
+
+# ----------------------------------------
+# COMPLETE a task
+# ----------------------------------------
+@router.post("/tasks/{task_id}/complete", response_model=Task)
+def complete_task(task_id: int):
+    for task in tasks:
+        if task.id == task_id:
+            task.status = "completed"
+            return task
+    raise HTTPException(status_code=404, detail="Task not found")
+
+
+# ----------------------------------------
+# DELETE a task
+# ----------------------------------------
+@router.delete("/tasks/{task_id}", response_model=Task)
+def delete_task(task_id: int):
+    """
+    Deletes a task by ID and returns the deleted task.
+    """
+    global tasks
+    for index, task in enumerate(tasks):
+        if task.id == task_id:
+            deleted = tasks.pop(index)
+            return deleted
+
+    raise HTTPException(status_code=404, detail="Task not found")
+
+
+# ----------------------------------------
+# STARTER TASKS for new users
+# ----------------------------------------
+@router.post("/tasks/starter")
+def add_starter_tasks():
+    global tasks
+
+    starter_items = [
+        ("Put baby clothes in the hamper", "tiny"),
+        ("Brain dump for 5 minutes", "tiny"),
+        ("Sort documents for 10 minutes", "big"),
+    ]
+
+    created = []
+    for title, size in starter_items:
+        new = Task(
+            id=generate_id(),
+            title=title,
+            size=size,
+            category=None,
+            importance=None,
+            due_date=None,
+            status="pending",
+            recurrence=None,
+            is_routine=False
+        )
+        tasks.append(new)
+        created.append(new)
+
+    return {"added": created}
